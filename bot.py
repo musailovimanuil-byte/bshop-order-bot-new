@@ -58,10 +58,7 @@ RETURN_STATUSES = {
 }
 
 
-# Временные действия администратора
 admin_actions = {}
-
-# Временные заявки клиентов
 return_requests = {}
 
 
@@ -317,7 +314,7 @@ def update_return_status(return_id, status):
 
 
 # =========================
-# КНОПКИ КЛИЕНТА
+# CLIENT MENU
 # =========================
 
 def main_menu():
@@ -339,7 +336,7 @@ def main_menu():
 
 
 # =========================
-# АДМИНСКИЕ КНОПКИ
+# ADMIN MENU
 # =========================
 
 def admin_menu():
@@ -517,29 +514,49 @@ async def main():
         text, photo_id = format_order(order)
 
         if photo_id:
-
             await message.answer_photo(
                 photo=photo_id,
                 caption=text,
             )
-
         else:
-
             await message.answer(text)
 
     # =========================
-    # ADMIN
+    # RETURN COMMAND
+    # =========================
+
+    @dp.message(Command("return"))
+    async def return_command(message: Message):
+
+        return_requests[
+            message.from_user.id
+        ] = {
+            "photos": []
+        }
+
+        await message.answer(
+            "↩️ <b>Заявка на возврат / обмен</b>\n\n"
+            "Возврат возможен в течение <b>7 дней</b> "
+            "с момента получения заказа.\n\n"
+            "<b>Условия возврата:</b>\n"
+            "• вещь не должна быть ношена;\n"
+            "• вещь не должна иметь следов стирки или использования;\n"
+            "• желательно сохранить бирки и упаковку;\n"
+            "• при обнаружении брака обязательно приложите "
+            "фотографии дефекта.\n\n"
+            "Напиши <b>причину возврата или обмена</b> "
+            "одним сообщением."
+        )
+
+    # =========================
+    # ADMIN COMMAND
     # =========================
 
     @dp.message(Command("admin"))
     async def admin(message: Message):
 
         if message.from_user.id not in ADMIN_IDS:
-
-            await message.answer(
-                "⛔ Доступ запрещён."
-            )
-
+            await message.answer("⛔ Доступ запрещён.")
             return
 
         await message.answer(
@@ -548,7 +565,7 @@ async def main():
         )
 
     # =========================
-    # МОЙ ЗАКАЗ
+    # MY ORDER
     # =========================
 
     @dp.callback_query(F.data == "my_order")
@@ -566,20 +583,17 @@ async def main():
         text, photo_id = format_order(order)
 
         if photo_id:
-
             await callback.message.answer_photo(
                 photo=photo_id,
                 caption=text,
             )
-
         else:
-
             await callback.message.answer(text)
 
         await callback.answer()
 
     # =========================
-    # ВОЗВРАТ: НАЧАЛО
+    # RETURN BUTTON
     # =========================
 
     @dp.callback_query(F.data == "return_start")
@@ -595,7 +609,7 @@ async def main():
             "↩️ <b>Заявка на возврат / обмен</b>\n\n"
             "Возврат возможен в течение <b>7 дней</b> "
             "с момента получения заказа.\n\n"
-            "Условия:\n"
+            "<b>Условия возврата:</b>\n"
             "• вещь не должна быть ношена;\n"
             "• вещь не должна иметь следов стирки или использования;\n"
             "• желательно сохранить бирки и упаковку;\n"
@@ -608,13 +622,16 @@ async def main():
         await callback.answer()
 
     # =========================
-    # ВОЗВРАТ: ПОЛУЧЕНИЕ ПРИЧИНЫ
+    # RETURN REASON
     # =========================
 
     @dp.message(
         F.text,
-        lambda message: message.from_user.id in return_requests
-        and "reason" not in return_requests[message.from_user.id]
+        lambda message:
+        message.from_user.id in return_requests
+        and "reason" not in return_requests[
+            message.from_user.id
+        ]
     )
     async def return_reason(message: Message):
 
@@ -631,17 +648,18 @@ async def main():
             "📸 <b>Теперь отправь фотографии товара.</b>\n\n"
             "Если есть дефект, обязательно сфотографируй "
             "его крупным планом.\n\n"
-            "Можно отправить несколько фотографий.\n"
-            "Когда закончишь, отправь /done"
+            "Можно отправить до <b>5 фотографий</b>.\n\n"
+            "Когда закончишь, отправь <b>/done</b>."
         )
 
     # =========================
-    # ВОЗВРАТ: ФОТО
+    # RETURN PHOTO
     # =========================
 
     @dp.message(
         F.photo,
-        lambda message: message.from_user.id in return_requests
+        lambda message:
+        message.from_user.id in return_requests
     )
     async def return_photo(message: Message):
 
@@ -653,9 +671,11 @@ async def main():
             return
 
         if "reason" not in data:
+
             await message.answer(
                 "Сначала напиши причину возврата."
             )
+
             return
 
         photos = data["photos"]
@@ -674,16 +694,17 @@ async def main():
 
         await message.answer(
             f"📸 Фото добавлено: {len(photos)}/5\n\n"
-            "Можешь отправить ещё фото или написать /done"
+            "Можешь отправить ещё фото или написать /done."
         )
 
     # =========================
-    # ВОЗВРАТ: ГОТОВО
+    # RETURN DONE
     # =========================
 
     @dp.message(
         Command("done"),
-        lambda message: message.from_user.id in return_requests
+        lambda message:
+        message.from_user.id in return_requests
     )
     async def return_done(message: Message):
 
@@ -722,7 +743,6 @@ async def main():
             "Мы рассмотрим заявку и сообщим решение."
         )
 
-        # Уведомление администратору
         for admin_id in ADMIN_IDS:
 
             try:
@@ -737,7 +757,6 @@ async def main():
                     reply_markup=return_status_menu(return_id),
                 )
 
-                # Отправляем фотографии админу
                 for photo_id in photos:
 
                     await bot.send_photo(
@@ -749,19 +768,17 @@ async def main():
                 pass
 
     # =========================
-    # АДМИН: КЛИЕНТЫ
+    # ADMIN CLIENTS
     # =========================
 
     @dp.callback_query(F.data == "admin_clients")
     async def admin_clients(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         orders = get_all_orders()
@@ -773,7 +790,6 @@ async def main():
             )
 
             await callback.answer()
-
             return
 
         builder = InlineKeyboardBuilder()
@@ -804,19 +820,17 @@ async def main():
         await callback.answer()
 
     # =========================
-    # АДМИН: КЛИЕНТ
+    # ADMIN CLIENT
     # =========================
 
     @dp.callback_query(F.data.startswith("client:"))
     async def admin_client(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         user_id = int(
@@ -831,7 +845,6 @@ async def main():
                 "Заказ не найден",
                 show_alert=True,
             )
-
             return
 
         text, _ = format_order(order)
@@ -846,19 +859,17 @@ async def main():
         await callback.answer()
 
     # =========================
-    # АДМИН: СТАТУС
+    # CHANGE STATUS MENU
     # =========================
 
     @dp.callback_query(F.data.startswith("change_status:"))
     async def change_status_menu(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         user_id = int(
@@ -872,16 +883,18 @@ async def main():
 
         await callback.answer()
 
+    # =========================
+    # CHANGE STATUS
+    # =========================
+
     @dp.callback_query(F.data.startswith("status:"))
     async def change_status(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         parts = callback.data.split(":")
@@ -895,7 +908,6 @@ async def main():
                 "Неизвестный статус",
                 show_alert=True,
             )
-
             return
 
         update_status(
@@ -926,19 +938,17 @@ async def main():
         )
 
     # =========================
-    # АДМИН: РЕДАКТИРОВАНИЕ
+    # EDIT ORDER
     # =========================
 
     @dp.callback_query(F.data.startswith("edit_order:"))
     async def edit_order(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         user_id = int(
@@ -953,16 +963,18 @@ async def main():
 
         await callback.answer()
 
+    # =========================
+    # EDIT DETAILS
+    # =========================
+
     @dp.callback_query(F.data.startswith("edit_details:"))
     async def edit_details(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         user_id = int(
@@ -986,16 +998,18 @@ async def main():
 
         await callback.answer()
 
+    # =========================
+    # EDIT PHOTO
+    # =========================
+
     @dp.callback_query(F.data.startswith("edit_photo:"))
     async def edit_photo(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         user_id = int(
@@ -1016,7 +1030,7 @@ async def main():
         await callback.answer()
 
     # =========================
-    # АДМИН: ТЕКСТ
+    # ADMIN TEXT
     # =========================
 
     @dp.message(F.text)
@@ -1052,7 +1066,7 @@ async def main():
         )
 
     # =========================
-    # АДМИН: ФОТО
+    # ADMIN PHOTO
     # =========================
 
     @dp.message(F.photo)
@@ -1089,19 +1103,17 @@ async def main():
         )
 
     # =========================
-    # АДМИН: ЗАЯВКИ НА ВОЗВРАТ
+    # ADMIN RETURNS
     # =========================
 
     @dp.callback_query(F.data == "admin_returns")
     async def admin_returns(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         returns = get_returns()
@@ -1113,7 +1125,6 @@ async def main():
             )
 
             await callback.answer()
-
             return
 
         builder = InlineKeyboardBuilder()
@@ -1146,19 +1157,17 @@ async def main():
         await callback.answer()
 
     # =========================
-    # ПРОСМОТР ВОЗВРАТА
+    # VIEW RETURN
     # =========================
 
     @dp.callback_query(F.data.startswith("return_view:"))
     async def return_view(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         return_id = int(
@@ -1173,7 +1182,6 @@ async def main():
                 "Заявка не найдена",
                 show_alert=True,
             )
-
             return
 
         (
@@ -1194,10 +1202,8 @@ async def main():
 
         text = (
             f"↩️ <b>Заявка #{rid}</b>\n\n"
-            f"👤 Клиент: "
-            f"<code>{user_id}</code>\n"
-            f"Статус: "
-            f"<b>{RETURN_STATUSES.get(status, status)}</b>\n\n"
+            f"👤 Клиент: <code>{user_id}</code>\n"
+            f"Статус: <b>{RETURN_STATUSES.get(status, status)}</b>\n\n"
             f"📝 <b>Причина:</b>\n"
             f"{reason}\n\n"
             f"📸 Фотографий: {len(photo_list)}\n"
@@ -1212,6 +1218,7 @@ async def main():
         for photo_id in photo_list:
 
             if photo_id:
+
                 try:
                     await callback.message.answer_photo(
                         photo=photo_id
@@ -1222,19 +1229,17 @@ async def main():
         await callback.answer()
 
     # =========================
-    # СТАТУС ВОЗВРАТА
+    # RETURN STATUS
     # =========================
 
     @dp.callback_query(F.data.startswith("return_status:"))
     async def change_return_status(callback: CallbackQuery):
 
         if callback.from_user.id not in ADMIN_IDS:
-
             await callback.answer(
                 "⛔ Нет доступа",
                 show_alert=True,
             )
-
             return
 
         parts = callback.data.split(":")
@@ -1248,7 +1253,6 @@ async def main():
                 "Неизвестный статус",
                 show_alert=True,
             )
-
             return
 
         request = get_return(return_id)
@@ -1259,7 +1263,6 @@ async def main():
                 "Заявка не найдена",
                 show_alert=True,
             )
-
             return
 
         update_return_status(
@@ -1274,7 +1277,6 @@ async def main():
             show_alert=True,
         )
 
-        # Сообщение клиенту
         try:
 
             await bot.send_message(
@@ -1301,6 +1303,10 @@ async def main():
             BotCommand(
                 command="order",
                 description="📦 Мой заказ",
+            ),
+            BotCommand(
+                command="return",
+                description="↩️ Возврат / обмен",
             ),
             BotCommand(
                 command="id",
