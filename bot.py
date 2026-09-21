@@ -30,7 +30,12 @@ ADMIN_IDS = {
 DB = "orders.db"
 
 
+# =========================
+# СТАТУСЫ ЗАКАЗА
+# =========================
+
 STATUSES = {
+    "registered": "👋 Клиент зарегистрирован",
     "ordered": "📝 Заказ оформлен",
     "warehouse": "📦 На складе",
     "preparing": "📤 Готовится к отправке",
@@ -41,8 +46,23 @@ STATUSES = {
 }
 
 
-# Хранит временное действие администратора
+# =========================
+# СТАТУСЫ ВОЗВРАТА
+# =========================
+
+RETURN_STATUSES = {
+    "new": "🆕 Новая заявка",
+    "review": "🔎 На рассмотрении",
+    "approved": "✅ Возврат одобрен",
+    "rejected": "❌ Возврат отклонён",
+}
+
+
+# Временные действия администратора
 admin_actions = {}
+
+# Временные заявки клиентов
+return_requests = {}
 
 
 # =========================
@@ -62,9 +82,23 @@ def init_db():
         CREATE TABLE IF NOT EXISTS orders (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
-            status TEXT DEFAULT 'ordered',
-            details TEXT DEFAULT 'Информация о заказе пока не добавлена.',
+            status TEXT DEFAULT 'registered',
+            details TEXT DEFAULT 'Заказ пока не оформлен.',
             photo_id TEXT
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS returns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            reason TEXT,
+            photos TEXT,
+            status TEXT DEFAULT 'new',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
@@ -72,6 +106,10 @@ def init_db():
     conn.commit()
     conn.close()
 
+
+# =========================
+# ORDERS
+# =========================
 
 def get_order(user_id):
     conn = db()
@@ -109,8 +147,8 @@ def create_order(user_id, username):
         (
             user_id,
             username or "",
-            "ordered",
-            "Информация о заказе пока не добавлена.",
+            "registered",
+            "Заказ пока не оформлен.",
             None,
         ),
     )
@@ -190,7 +228,96 @@ def get_all_orders():
 
 
 # =========================
-# KEYBOARDS
+# RETURNS
+# =========================
+
+def create_return(user_id, username, reason, photos):
+    conn = db()
+    cur = conn.cursor()
+
+    photos_text = ",".join(photos)
+
+    cur.execute(
+        """
+        INSERT INTO returns
+        (user_id, username, reason, photos, status)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            username or "",
+            reason,
+            photos_text,
+            "new",
+        ),
+    )
+
+    return_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return return_id
+
+
+def get_returns():
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, user_id, username, reason, photos, status, created_at
+        FROM returns
+        ORDER BY id DESC
+        """
+    )
+
+    result = cur.fetchall()
+
+    conn.close()
+
+    return result
+
+
+def get_return(return_id):
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, user_id, username, reason, photos, status, created_at
+        FROM returns
+        WHERE id = ?
+        """,
+        (return_id,),
+    )
+
+    result = cur.fetchone()
+
+    conn.close()
+
+    return result
+
+
+def update_return_status(return_id, status):
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE returns
+        SET status = ?
+        WHERE id = ?
+        """,
+        (status, return_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+# =========================
+# КНОПКИ КЛИЕНТА
 # =========================
 
 def main_menu():
@@ -201,10 +328,19 @@ def main_menu():
         callback_data="my_order",
     )
 
+    builder.button(
+        text="↩️ Возврат / обмен",
+        callback_data="return_start",
+    )
+
     builder.adjust(1)
 
     return builder.as_markup()
 
+
+# =========================
+# АДМИНСКИЕ КНОПКИ
+# =========================
 
 def admin_menu():
     builder = InlineKeyboardBuilder()
@@ -212,6 +348,11 @@ def admin_menu():
     builder.button(
         text="👥 Клиенты",
         callback_data="admin_clients",
+    )
+
+    builder.button(
+        text="↩️ Заявки на возврат",
+        callback_data="admin_returns",
     )
 
     builder.adjust(1)
@@ -269,6 +410,29 @@ def edit_menu(user_id):
     return builder.as_markup()
 
 
+def return_status_menu(return_id):
+    builder = InlineKeyboardBuilder()
+
+    builder.button(
+        text="🔎 На рассмотрении",
+        callback_data=f"return_status:{return_id}:review",
+    )
+
+    builder.button(
+        text="✅ Одобрить",
+        callback_data=f"return_status:{return_id}:approved",
+    )
+
+    builder.button(
+        text="❌ Отклонить",
+        callback_data=f"return_status:{return_id}:rejected",
+    )
+
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
 # =========================
 # ORDER FORMAT
 # =========================
@@ -279,7 +443,7 @@ def format_order(order):
     text = (
         "📦 <b>Мой заказ</b>\n\n"
         f"Статус: <b>{STATUSES.get(status, status)}</b>\n\n"
-        f"🛍 <b>Детали заказа:</b>\n{details}"
+        f"🛍 <b>Детали:</b>\n{details}"
     )
 
     return text, photo_id
@@ -316,12 +480,14 @@ async def main():
 
         await message.answer(
             "👋 <b>Добро пожаловать в BSHOP!</b>\n\n"
-            "Здесь ты можешь отслеживать свой заказ.",
+            "Здесь ты можешь отслеживать свой заказ.\n\n"
+            "📌 <b>Заказ пока не оформлен.</b>\n"
+            "Если ты хочешь оформить заказ, свяжись с нами.",
             reply_markup=main_menu(),
         )
 
     # =========================
-    # MY ID
+    # ID
     # =========================
 
     @dp.message(Command("id"))
@@ -333,7 +499,7 @@ async def main():
         )
 
     # =========================
-    # MY ORDER COMMAND
+    # ORDER COMMAND
     # =========================
 
     @dp.message(Command("order"))
@@ -359,9 +525,7 @@ async def main():
 
         else:
 
-            await message.answer(
-                text
-            )
+            await message.answer(text)
 
     # =========================
     # ADMIN
@@ -384,7 +548,7 @@ async def main():
         )
 
     # =========================
-    # CLIENT: MY ORDER BUTTON
+    # МОЙ ЗАКАЗ
     # =========================
 
     @dp.callback_query(F.data == "my_order")
@@ -410,14 +574,182 @@ async def main():
 
         else:
 
-            await callback.message.answer(
-                text
-            )
+            await callback.message.answer(text)
 
         await callback.answer()
 
     # =========================
-    # ADMIN: CLIENTS
+    # ВОЗВРАТ: НАЧАЛО
+    # =========================
+
+    @dp.callback_query(F.data == "return_start")
+    async def return_start(callback: CallbackQuery):
+
+        return_requests[
+            callback.from_user.id
+        ] = {
+            "photos": []
+        }
+
+        await callback.message.answer(
+            "↩️ <b>Заявка на возврат / обмен</b>\n\n"
+            "Возврат возможен в течение <b>7 дней</b> "
+            "с момента получения заказа.\n\n"
+            "Условия:\n"
+            "• вещь не должна быть ношена;\n"
+            "• вещь не должна иметь следов стирки или использования;\n"
+            "• желательно сохранить бирки и упаковку;\n"
+            "• при обнаружении брака обязательно приложите "
+            "фотографии дефекта.\n\n"
+            "Напиши <b>причину возврата или обмена</b> "
+            "одним сообщением."
+        )
+
+        await callback.answer()
+
+    # =========================
+    # ВОЗВРАТ: ПОЛУЧЕНИЕ ПРИЧИНЫ
+    # =========================
+
+    @dp.message(
+        F.text,
+        lambda message: message.from_user.id in return_requests
+        and "reason" not in return_requests[message.from_user.id]
+    )
+    async def return_reason(message: Message):
+
+        data = return_requests.get(
+            message.from_user.id
+        )
+
+        if not data:
+            return
+
+        data["reason"] = message.text
+
+        await message.answer(
+            "📸 <b>Теперь отправь фотографии товара.</b>\n\n"
+            "Если есть дефект, обязательно сфотографируй "
+            "его крупным планом.\n\n"
+            "Можно отправить несколько фотографий.\n"
+            "Когда закончишь, отправь /done"
+        )
+
+    # =========================
+    # ВОЗВРАТ: ФОТО
+    # =========================
+
+    @dp.message(
+        F.photo,
+        lambda message: message.from_user.id in return_requests
+    )
+    async def return_photo(message: Message):
+
+        data = return_requests.get(
+            message.from_user.id
+        )
+
+        if not data:
+            return
+
+        if "reason" not in data:
+            await message.answer(
+                "Сначала напиши причину возврата."
+            )
+            return
+
+        photos = data["photos"]
+
+        if len(photos) >= 5:
+
+            await message.answer(
+                "Можно прикрепить максимум 5 фотографий."
+            )
+
+            return
+
+        photos.append(
+            message.photo[-1].file_id
+        )
+
+        await message.answer(
+            f"📸 Фото добавлено: {len(photos)}/5\n\n"
+            "Можешь отправить ещё фото или написать /done"
+        )
+
+    # =========================
+    # ВОЗВРАТ: ГОТОВО
+    # =========================
+
+    @dp.message(
+        Command("done"),
+        lambda message: message.from_user.id in return_requests
+    )
+    async def return_done(message: Message):
+
+        data = return_requests.get(
+            message.from_user.id
+        )
+
+        if not data:
+            return
+
+        if "reason" not in data:
+
+            await message.answer(
+                "Сначала напиши причину возврата."
+            )
+
+            return
+
+        reason = data["reason"]
+        photos = data["photos"]
+
+        return_id = create_return(
+            message.from_user.id,
+            message.from_user.username,
+            reason,
+            photos,
+        )
+
+        del return_requests[
+            message.from_user.id
+        ]
+
+        await message.answer(
+            "✅ <b>Заявка отправлена!</b>\n\n"
+            f"Номер заявки: <b>#{return_id}</b>\n\n"
+            "Мы рассмотрим заявку и сообщим решение."
+        )
+
+        # Уведомление администратору
+        for admin_id in ADMIN_IDS:
+
+            try:
+
+                await bot.send_message(
+                    admin_id,
+                    "↩️ <b>Новая заявка на возврат!</b>\n\n"
+                    f"Заявка: <b>#{return_id}</b>\n"
+                    f"Клиент: <code>{message.from_user.id}</code>\n"
+                    f"Причина: {reason}\n"
+                    f"Фотографий: {len(photos)}",
+                    reply_markup=return_status_menu(return_id),
+                )
+
+                # Отправляем фотографии админу
+                for photo_id in photos:
+
+                    await bot.send_photo(
+                        admin_id,
+                        photo=photo_id,
+                    )
+
+            except Exception:
+                pass
+
+    # =========================
+    # АДМИН: КЛИЕНТЫ
     # =========================
 
     @dp.callback_query(F.data == "admin_clients")
@@ -472,7 +804,7 @@ async def main():
         await callback.answer()
 
     # =========================
-    # ADMIN: CLIENT
+    # АДМИН: КЛИЕНТ
     # =========================
 
     @dp.callback_query(F.data.startswith("client:"))
@@ -514,7 +846,7 @@ async def main():
         await callback.answer()
 
     # =========================
-    # ADMIN: CHANGE STATUS MENU
+    # АДМИН: СТАТУС
     # =========================
 
     @dp.callback_query(F.data.startswith("change_status:"))
@@ -539,10 +871,6 @@ async def main():
         )
 
         await callback.answer()
-
-    # =========================
-    # ADMIN: CHANGE STATUS
-    # =========================
 
     @dp.callback_query(F.data.startswith("status:"))
     async def change_status(callback: CallbackQuery):
@@ -580,13 +908,12 @@ async def main():
             show_alert=True,
         )
 
-        # Уведомляем клиента
         try:
 
             await bot.send_message(
                 user_id,
                 "📦 <b>Статус заказа обновлён!</b>\n\n"
-                "Новый статус:\n"
+                f"Новый статус:\n"
                 f"<b>{STATUSES[status]}</b>",
             )
 
@@ -599,7 +926,7 @@ async def main():
         )
 
     # =========================
-    # ADMIN: EDIT ORDER
+    # АДМИН: РЕДАКТИРОВАНИЕ
     # =========================
 
     @dp.callback_query(F.data.startswith("edit_order:"))
@@ -625,10 +952,6 @@ async def main():
         )
 
         await callback.answer()
-
-    # =========================
-    # ADMIN: EDIT DETAILS
-    # =========================
 
     @dp.callback_query(F.data.startswith("edit_details:"))
     async def edit_details(callback: CallbackQuery):
@@ -663,10 +986,6 @@ async def main():
 
         await callback.answer()
 
-    # =========================
-    # ADMIN: EDIT PHOTO
-    # =========================
-
     @dp.callback_query(F.data.startswith("edit_photo:"))
     async def edit_photo(callback: CallbackQuery):
 
@@ -697,7 +1016,7 @@ async def main():
         await callback.answer()
 
     # =========================
-    # ADMIN: TEXT
+    # АДМИН: ТЕКСТ
     # =========================
 
     @dp.message(F.text)
@@ -733,7 +1052,7 @@ async def main():
         )
 
     # =========================
-    # ADMIN: PHOTO
+    # АДМИН: ФОТО
     # =========================
 
     @dp.message(F.photo)
@@ -770,6 +1089,210 @@ async def main():
         )
 
     # =========================
+    # АДМИН: ЗАЯВКИ НА ВОЗВРАТ
+    # =========================
+
+    @dp.callback_query(F.data == "admin_returns")
+    async def admin_returns(callback: CallbackQuery):
+
+        if callback.from_user.id not in ADMIN_IDS:
+
+            await callback.answer(
+                "⛔ Нет доступа",
+                show_alert=True,
+            )
+
+            return
+
+        returns = get_returns()
+
+        if not returns:
+
+            await callback.message.answer(
+                "↩️ Заявок на возврат пока нет."
+            )
+
+            await callback.answer()
+
+            return
+
+        builder = InlineKeyboardBuilder()
+
+        for (
+            return_id,
+            user_id,
+            username,
+            reason,
+            photos,
+            status,
+            created_at,
+        ) in returns:
+
+            builder.button(
+                text=(
+                    f"#{return_id} — "
+                    f"{RETURN_STATUSES.get(status, status)}"
+                ),
+                callback_data=f"return_view:{return_id}",
+            )
+
+        builder.adjust(1)
+
+        await callback.message.answer(
+            "↩️ <b>Заявки на возврат:</b>",
+            reply_markup=builder.as_markup(),
+        )
+
+        await callback.answer()
+
+    # =========================
+    # ПРОСМОТР ВОЗВРАТА
+    # =========================
+
+    @dp.callback_query(F.data.startswith("return_view:"))
+    async def return_view(callback: CallbackQuery):
+
+        if callback.from_user.id not in ADMIN_IDS:
+
+            await callback.answer(
+                "⛔ Нет доступа",
+                show_alert=True,
+            )
+
+            return
+
+        return_id = int(
+            callback.data.split(":")[1]
+        )
+
+        request = get_return(return_id)
+
+        if not request:
+
+            await callback.answer(
+                "Заявка не найдена",
+                show_alert=True,
+            )
+
+            return
+
+        (
+            rid,
+            user_id,
+            username,
+            reason,
+            photos,
+            status,
+            created_at,
+        ) = request
+
+        photo_list = (
+            photos.split(",")
+            if photos
+            else []
+        )
+
+        text = (
+            f"↩️ <b>Заявка #{rid}</b>\n\n"
+            f"👤 Клиент: "
+            f"<code>{user_id}</code>\n"
+            f"Статус: "
+            f"<b>{RETURN_STATUSES.get(status, status)}</b>\n\n"
+            f"📝 <b>Причина:</b>\n"
+            f"{reason}\n\n"
+            f"📸 Фотографий: {len(photo_list)}\n"
+            f"🕐 Создана: {created_at}"
+        )
+
+        await callback.message.answer(
+            text,
+            reply_markup=return_status_menu(return_id),
+        )
+
+        for photo_id in photo_list:
+
+            if photo_id:
+                try:
+                    await callback.message.answer_photo(
+                        photo=photo_id
+                    )
+                except Exception:
+                    pass
+
+        await callback.answer()
+
+    # =========================
+    # СТАТУС ВОЗВРАТА
+    # =========================
+
+    @dp.callback_query(F.data.startswith("return_status:"))
+    async def change_return_status(callback: CallbackQuery):
+
+        if callback.from_user.id not in ADMIN_IDS:
+
+            await callback.answer(
+                "⛔ Нет доступа",
+                show_alert=True,
+            )
+
+            return
+
+        parts = callback.data.split(":")
+
+        return_id = int(parts[1])
+        status = parts[2]
+
+        if status not in RETURN_STATUSES:
+
+            await callback.answer(
+                "Неизвестный статус",
+                show_alert=True,
+            )
+
+            return
+
+        request = get_return(return_id)
+
+        if not request:
+
+            await callback.answer(
+                "Заявка не найдена",
+                show_alert=True,
+            )
+
+            return
+
+        update_return_status(
+            return_id,
+            status
+        )
+
+        user_id = request[1]
+
+        await callback.answer(
+            "Статус заявки изменён ✅",
+            show_alert=True,
+        )
+
+        # Сообщение клиенту
+        try:
+
+            await bot.send_message(
+                user_id,
+                "↩️ <b>Обновление по заявке на возврат</b>\n\n"
+                f"Заявка: <b>#{return_id}</b>\n"
+                f"Статус: <b>{RETURN_STATUSES[status]}</b>",
+            )
+
+        except Exception:
+            pass
+
+        await callback.message.answer(
+            "✅ <b>Статус заявки изменён</b>\n\n"
+            f"{RETURN_STATUSES[status]}"
+        )
+
+    # =========================
     # TELEGRAM MENU
     # =========================
 
@@ -795,357 +1318,6 @@ async def main():
             type="commands"
         )
     )
-
-    print("BSHOP BOT STARTED")
-
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-def db():
-    return sqlite3.connect(DB)
-
-
-def init_db():
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS orders (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            status TEXT DEFAULT 'ordered',
-            details TEXT DEFAULT 'Информация о заказе пока не добавлена.',
-            photo_id TEXT
-        )
-        """
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def get_order(user_id):
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT user_id, username, status, details, photo_id
-        FROM orders
-        WHERE user_id = ?
-        """,
-        (user_id,),
-    )
-
-    result = cur.fetchone()
-
-    conn.close()
-
-    return result
-
-
-def create_order(user_id, username):
-    if get_order(user_id):
-        return
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO orders
-        (user_id, username, status, details, photo_id)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            username or "",
-            "ordered",
-            "Информация о заказе пока не добавлена.",
-            None,
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def update_status(user_id, status):
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        UPDATE orders
-        SET status = ?
-        WHERE user_id = ?
-        """,
-        (status, user_id),
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def get_all_orders():
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT user_id, username, status
-        FROM orders
-        ORDER BY user_id
-        """
-    )
-
-    result = cur.fetchall()
-
-    conn.close()
-
-    return result
-
-
-def main_menu():
-    builder = InlineKeyboardBuilder()
-
-    builder.button(
-        text="📦 Мой заказ",
-        callback_data="my_order",
-    )
-
-    builder.adjust(1)
-
-    return builder.as_markup()
-
-
-def admin_menu():
-    builder = InlineKeyboardBuilder()
-
-    builder.button(
-        text="👥 Клиенты",
-        callback_data="admin_clients",
-    )
-
-    builder.adjust(1)
-
-    return builder.as_markup()
-
-
-def status_menu(user_id):
-    builder = InlineKeyboardBuilder()
-
-    for key, name in STATUSES.items():
-        builder.button(
-            text=name,
-            callback_data=f"status:{user_id}:{key}",
-        )
-
-    builder.adjust(1)
-
-    return builder.as_markup()
-
-
-def format_order(order):
-    user_id, username, status, details, photo_id = order
-
-    text = (
-        "📦 <b>Мой заказ</b>\n\n"
-        f"Статус: <b>{STATUSES.get(status, status)}</b>\n\n"
-        f"🛍 <b>Детали:</b>\n{details}"
-    )
-
-    return text, photo_id
-
-
-async def main():
-    init_db()
-
-    bot = Bot(
-        token=TOKEN,
-        default=DefaultBotProperties(
-            parse_mode="HTML"
-        ),
-    )
-
-    dp = Dispatcher()
-
-    @dp.message(CommandStart())
-    async def start(message: Message):
-        create_order(
-            message.from_user.id,
-            message.from_user.username,
-        )
-
-        await message.answer(
-            "👋 <b>Добро пожаловать в BSHOP!</b>\n\n"
-            "Здесь ты можешь отслеживать свой заказ.",
-            reply_markup=main_menu(),
-        )
-
-    @dp.message(Command("id"))
-    async def get_id(message: Message):
-        await message.answer(
-            f"Твой Telegram ID:\n"
-            f"<code>{message.from_user.id}</code>"
-        )
-
-    @dp.message(Command("admin"))
-    async def admin(message: Message):
-        if message.from_user.id not in ADMIN_IDS:
-            await message.answer("⛔ Доступ запрещён.")
-            return
-
-        await message.answer(
-            "⚙️ <b>Панель администратора</b>",
-            reply_markup=admin_menu(),
-        )
-
-    @dp.callback_query(F.data == "my_order")
-    async def my_order(callback: CallbackQuery):
-        create_order(
-            callback.from_user.id,
-            callback.from_user.username,
-        )
-
-        order = get_order(callback.from_user.id)
-
-        text, photo_id = format_order(order)
-
-        if photo_id:
-            await callback.message.answer_photo(
-                photo=photo_id,
-                caption=text,
-            )
-        else:
-            await callback.message.answer(text)
-
-        await callback.answer()
-
-    @dp.callback_query(F.data == "admin_clients")
-    async def admin_clients(callback: CallbackQuery):
-        if callback.from_user.id not in ADMIN_IDS:
-            await callback.answer(
-                "⛔ Нет доступа",
-                show_alert=True,
-            )
-            return
-
-        orders = get_all_orders()
-
-        if not orders:
-            await callback.message.answer(
-                "Пока клиентов нет."
-            )
-            await callback.answer()
-            return
-
-        builder = InlineKeyboardBuilder()
-
-        for user_id, username, status in orders:
-            name = (
-                f"@{username}"
-                if username
-                else str(user_id)
-            )
-
-            builder.button(
-                text=(
-                    f"{name} — "
-                    f"{STATUSES.get(status, status)}"
-                ),
-                callback_data=f"client:{user_id}",
-            )
-
-        builder.adjust(1)
-
-        await callback.message.answer(
-            "👥 <b>Клиенты:</b>",
-            reply_markup=builder.as_markup(),
-        )
-
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("client:"))
-    async def admin_client(callback: CallbackQuery):
-        if callback.from_user.id not in ADMIN_IDS:
-            await callback.answer(
-                "⛔ Нет доступа",
-                show_alert=True,
-            )
-            return
-
-        user_id = int(
-            callback.data.split(":")[1]
-        )
-
-        order = get_order(user_id)
-
-        if not order:
-            await callback.answer(
-                "Заказ не найден",
-                show_alert=True,
-            )
-            return
-
-        text, _ = format_order(order)
-
-        await callback.message.answer(
-            f"👤 <b>Клиент:</b> "
-            f"<code>{user_id}</code>\n\n"
-            f"{text}\n\n"
-            "Выбери новый статус:",
-            reply_markup=status_menu(user_id),
-        )
-
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("status:"))
-    async def change_status(callback: CallbackQuery):
-        if callback.from_user.id not in ADMIN_IDS:
-            await callback.answer(
-                "⛔ Нет доступа",
-                show_alert=True,
-            )
-            return
-
-        parts = callback.data.split(":")
-
-        user_id = int(parts[1])
-        status = parts[2]
-
-        if status not in STATUSES:
-            await callback.answer(
-                "Неизвестный статус",
-                show_alert=True,
-            )
-            return
-
-        update_status(user_id, status)
-
-        await callback.answer(
-            "Статус изменён ✅",
-            show_alert=True,
-        )
-
-        try:
-            await bot.send_message(
-                user_id,
-                "📦 <b>Статус заказа обновлён!</b>\n\n"
-                f"Новый статус:\n"
-                f"<b>{STATUSES[status]}</b>",
-            )
-        except Exception:
-            pass
-
-        await callback.message.answer(
-            "✅ <b>Статус изменён</b>\n\n"
-            f"{STATUSES[status]}"
-        )
 
     print("BSHOP BOT STARTED")
 
